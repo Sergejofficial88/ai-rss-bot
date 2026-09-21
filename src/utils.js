@@ -19,8 +19,21 @@ export function truncate(text, max) {
  */
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
+/** Максимальная длина owner/repo по правилам GitHub: 39 + 1 + 100. */
+const REPO_MAX_LENGTH = 140;
+const OWNER_MAX_LENGTH = 39;
+const REPO_NAME_MAX_LENGTH = 100;
+
 export function isValidRepoName(name) {
-  return typeof name === 'string' && REPO_PATTERN.test(name);
+  if (typeof name !== 'string' || name.length > REPO_MAX_LENGTH) return false;
+  if (!REPO_PATTERN.test(name)) return false;
+
+  const [owner, repo] = name.split('/');
+
+  // Точки разрешены в именах, но сегменты «.» и «..» — это уже подмена пути.
+  if (owner === '.' || owner === '..' || repo === '.' || repo === '..') return false;
+
+  return owner.length <= OWNER_MAX_LENGTH && repo.length <= REPO_NAME_MAX_LENGTH;
 }
 
 /** Текущее время в ISO-формате. */

@@ -8,7 +8,12 @@ import {
 } from './config.js';
 import { fetchLatestReleaseBody, fetchStarredWithReleases } from './github.js';
 import { buildAskButton, mainMenuKeyboard, sendTelegramMessage } from './telegram.js';
-import { escapeHtml, formatDateTime, mapLimit, nowIso, truncate } from './utils.js';
+import { errorText, escapeHtml, formatDateTime, mapLimit, nowIso, truncate } from './utils.js';
+
+/** Подпись с моделью, которая подготовила ответ. */
+function providerNote(provider) {
+  return provider ? `\n\n<i>🤖 ${escapeHtml(provider)}</i>` : '';
+}
 
 /**
  * Список избранного с кэшем в KV.
@@ -17,14 +22,16 @@ import { escapeHtml, formatDateTime, mapLimit, nowIso, truncate } from './utils.
 export async function getStarredRepos(env, forceRefresh = false) {
   if (!forceRefresh) {
     const cached = await env.RELEASES_KV.get(KV_KEYS.reposCache, 'json');
-    if (Array.isArray(cached)) return cached;
+    if (cached && Array.isArray(cached.repos)) return cached;
   }
 
-  const repos = await fetchStarredWithReleases(env);
-  await env.RELEASES_KV.put(KV_KEYS.reposCache, JSON.stringify(repos), {
+  const data = await fetchStarredWithReleases(env);
+  const payload = { ...data, fetchedAt: nowIso() };
+
+  await env.RELEASES_KV.put(KV_KEYS.reposCache, JSON.stringify(payload), {
     expirationTtl: REPOS_CACHE_TTL_SECONDS,
   });
-  return repos;
+  return payload;
 }
 
 /** Сброс кэша списка — вызывается после проверки, если состав избранного изменился. */
@@ -37,7 +44,7 @@ export async function invalidateReposCache(env) {
  * Возвращает текстовый отчёт (используется в /run и при ручной проверке).
  */
 export async function runCheck(env, { silent = false } = {}) {
-  const repos = await fetchStarredWithReleases(env);
+  const { repos, totalCount, skipped } = await fetchStarredWithReleases(env);
   const isBaseline = !(await env.RELEASES_KV.get(KV_KEYS.initialized));
 
   const newRepos = [];
@@ -93,12 +100,16 @@ export async function runCheck(env, { silent = false } = {}) {
   // 1. Новые избранные проекты.
   for (const repo of newRepos.slice(0, MAX_REPO_NOTICES_PER_RUN)) {
     let summary = escapeHtml(truncate(repo.description || 'Описание отсутствует', 400));
+    let provider = null;
 
     if (takeAiCall()) {
       try {
         const analysis = await analyzeNewRepo(env, repo);
-        if (analysis) summary = escapeHtml(analysis);
-      } catch (_error) {}
+        if (analysis.text) summary = escapeHtml(analysis.text);
+        provider = analysis.provider;
+      } catch (error) {
+        console.error('ИИ (новый проект) не сработал:', errorText(error));
+      }
     }
 
     const buttons = [{ text: '⭐ Проект на GitHub', url: repo.url }];
@@ -109,7 +120,8 @@ export async function runCheck(env, { silent = false } = {}) {
       env,
       env.ALLOWED_TELEGRAM_ID,
       `<b>⭐ Добавлен новый избранный проект: ${escapeHtml(repo.fullName)}</b>\n\n` +
-        `<b>🤖 Обзор ИИ:</b>\n${summary}`,
+        `<b>🤖 Обзор ИИ:</b>\n${summary}` +
+        providerNote(provider),
       { inline_keyboard: [buttons] }
     );
   }
@@ -117,12 +129,17 @@ export async function runCheck(env, { silent = false } = {}) {
   // 2. Новые релизы.
   for (const { repo, release } of newReleases.slice(0, MAX_RELEASE_NOTICES_PER_RUN)) {
     let analysis = '';
+    let provider = null;
 
     if (takeAiCall()) {
       try {
         const body = await fetchLatestReleaseBody(env, repo.fullName);
-        analysis = await analyzeRelease(env, repo, release, body);
-      } catch (_error) {}
+        const result = await analyzeRelease(env, repo, release, body);
+        analysis = result.text;
+        provider = result.provider;
+      } catch (error) {
+        console.error('ИИ (релиз) не сработал:', errorText(error));
+      }
     }
 
     analysis = analysis
@@ -142,7 +159,8 @@ export async function runCheck(env, { silent = false } = {}) {
       env,
       env.ALLOWED_TELEGRAM_ID,
       `<b>🚀 Новый релиз: ${escapeHtml(repo.fullName)}</b> (<code>${escapeHtml(release.tag)}</code>)\n` +
-        `🕐 ${formatDateTime(release.publishedAt)}\n\n${analysis}`,
+        `🕐 ${formatDateTime(release.publishedAt)}\n\n${analysis}` +
+        providerNote(provider),
       { inline_keyboard: rows }
     );
   }
@@ -169,5 +187,6 @@ export async function runCheck(env, { silent = false } = {}) {
     await sendTelegramMessage(env, env.ALLOWED_TELEGRAM_ID, lines.join('\n'), mainMenuKeyboard());
   }
 
-  return `Проверено: ${repos.length}, новых проектов: ${newRepos.length}, новых релизов: ${newReleases.length}`;
+  const duplicates = skipped > 0 ? `, дублей отброшено: ${skipped}` : '';
+  return `Проверено: ${repos.length} из ${totalCount}${duplicates}, новых проектов: ${newRepos.length}, новых релизов: ${newReleases.length}`;
 }

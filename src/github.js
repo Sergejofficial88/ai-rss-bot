@@ -60,12 +60,22 @@ function pickLatestRelease(nodes) {
   };
 }
 
-/** Список избранных репозиториев вместе с их последними релизами. */
+/**
+ * Список избранных репозиториев вместе с их последними релизами.
+ *
+ * Возвращает объект:
+ *   repos      — массив репозиториев (без повторов);
+ *   totalCount — сколько избранного всего по данным GitHub;
+ *   skipped    — сколько дублей отброшено (диагностика пагинации).
+ */
 export async function fetchStarredWithReleases(env) {
   const login = env.GITHUB_USERNAME;
   if (!login) throw new Error('Не задан GITHUB_USERNAME');
 
   const repos = [];
+  const seen = new Set();
+  let skipped = 0;
+  let totalCount = 0;
   let cursor = null;
 
   // Защита от бесконечного цикла: 10 страниц × 100 = 1000 репозиториев.
@@ -91,11 +101,23 @@ export async function fetchStarredWithReleases(env) {
       throw new Error(`GitHub: пользователь «${login}» не найден или недоступен`);
     }
 
+    totalCount = connection.totalCount ?? totalCount;
+
     for (const edge of connection.edges ?? []) {
       const node = edge?.node;
-      if (!node?.nameWithOwner) continue;
+      const fullName = node?.nameWithOwner;
+      if (!fullName) continue;
+
+      // Защита от повторов: при пагинации по нестабильному порядку GitHub
+      // может вернуть один и тот же репозиторий дважды.
+      if (seen.has(fullName)) {
+        skipped += 1;
+        continue;
+      }
+      seen.add(fullName);
+
       repos.push({
-        fullName: node.nameWithOwner,
+        fullName,
         description: node.description || '',
         url: node.url,
         archived: Boolean(node.isArchived),
@@ -108,7 +130,11 @@ export async function fetchStarredWithReleases(env) {
     cursor = connection.pageInfo.endCursor;
   }
 
-  return repos;
+  if (skipped > 0) {
+    console.error(`GitHub вернул дубли: отброшено ${skipped}, уникальных ${repos.length}`);
+  }
+
+  return { repos, totalCount, skipped };
 }
 
 /** Полный текст последнего релиза — запрашивается только для действительно новых релизов. */

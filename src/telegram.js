@@ -1,4 +1,4 @@
-import { MAX_MESSAGE_LENGTH } from './config.js';
+import { CALLBACK_DATA_LIMIT, MAX_MESSAGE_LENGTH } from './config.js';
 import { chunkText } from './utils.js';
 
 function apiUrl(env, method) {
@@ -8,6 +8,11 @@ function apiUrl(env, method) {
 /**
  * Универсальный вызов Telegram Bot API.
  * Всегда проверяет ответ: иначе ошибки отправки остаются незамеченными.
+ *
+ * ВАЖНО: вызовы console.* здесь и в других модулях сохранены намеренно —
+ * в Cloudflare Worker это единственный механизм логирования.
+ * В biome.json правило noConsole отключено: его unsafe-автофикс удаляет
+ * вызовы console вместе с диагностикой.
  */
 export async function tgCall(env, method, payload) {
   const response = await fetch(apiUrl(env, method), {
@@ -24,6 +29,8 @@ export async function tgCall(env, method, payload) {
   }
 
   if (!data?.ok) {
+    const reason = data?.description ?? `HTTP ${response.status}`;
+    console.error(`Telegram ${method}: ${reason}`);
   }
   return data;
 }
@@ -47,7 +54,7 @@ export async function sendTelegramMessage(env, chatId, text, replyMarkup = null)
   return last;
 }
 
-/** Редактирование сообщения — используется для пагинации списка репозиториев. */
+/** Редактирование сообщения — используется для навигации по списку и карточкам. */
 export async function editTelegramMessage(env, chatId, messageId, text, replyMarkup = null) {
   return tgCall(env, 'editMessageText', {
     chat_id: chatId,
@@ -76,10 +83,11 @@ export function mainMenuKeyboard() {
   };
 }
 
-/** Telegram ограничивает callback_data 64 байтами — длинные имена не помещаем в кнопку. */
-export const CALLBACK_DATA_LIMIT = 64;
-
-/** Кнопка «Спросить ИИ» или null, если имя репозитория слишком длинное. */
+/**
+ * Кнопка «Спросить ИИ» с именем репозитория в callback_data.
+ * Возвращает null, если имя не влезает в лимит Telegram (64 байта) —
+ * в этом случае используется контекст карточки, сохранённый в KV.
+ */
 export function buildAskButton(fullName) {
   const data = `ask_init:${fullName}`;
   if (data.length > CALLBACK_DATA_LIMIT) return null;
