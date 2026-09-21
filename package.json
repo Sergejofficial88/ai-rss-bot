@@ -1,0 +1,20 @@
+{
+  "name": "realise-rss-ai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram-бот: следит за релизами избранных GitHub-репозиториев и присылает ИИ-разбор",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "lint": "biome check --write --unsafe ."
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "wrangler": "^4.136.1"
+  }
+}

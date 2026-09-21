@@ -1,0 +1,17 @@
+# Пример локальных переменных для `wrangler dev`.
+# Скопируйте в `.dev.vars` (файл в .gitignore) и подставьте свои значения.
+# В продакшене эти значения задаются как secrets в дашборде Cloudflare.
+
+TELEGRAM_BOT_TOKEN=123456:AA...
+ALLOWED_TELEGRAM_ID=123456789
+GITHUB_USERNAME=your-github-login
+GITHUB_TOKEN=ghp_...
+
+# Необязательно: ключ Google AI Studio (Gemini). Без него используется Workers AI.
+GEMINI_API_KEY=
+
+# Необязательно: защита ручного запуска /run?token=...
+RUN_TOKEN=
+
+# Необязательно: секрет вебхука Telegram (см. README)
+TELEGRAM_WEBHOOK_SECRET=

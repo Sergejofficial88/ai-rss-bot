@@ -1,0 +1,38 @@
+{
+  // Схема для автодополнения в редакторе
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  // Имя воркера в Cloudflare — менять не нужно, он уже существует
+  "name": "realise-rss-ai",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-24",
+
+  // Логи воркера видны в дашборде (Workers Logs)
+  "observability": {
+    "enabled": true
+  },
+
+  // Проверка каждые 15 минут. Полный обход всех репозиториев — 1 запрос к GitHub GraphQL.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+
+  // Workers AI — резервный провайдер ИИ (основной — Gemini через секрет GEMINI_API_KEY).
+  // ВАЖНО: в этом файле секретов нет и быть не должно — иначе они попадут в GitHub.
+  // GEMINI_API_KEY, RUN_TOKEN и TELEGRAM_WEBHOOK_SECRET задаются отдельно:
+  //   через дашборд: Worker → Settings → Variables and secrets → Add → Secret
+  //   или через CLI: npx wrangler secret put GEMINI_API_KEY
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Хранилище состояния.
+  // "binding" оставляем RELEASES_KV — именно это имя читает код (env.RELEASES_KV).
+  // Из дашборда копируем ТОЛЬКО значение "id": строка KV_BINDING там — пример-заглушка.
+  "kv_namespaces": [
+    {
+      "binding": "RELEASES_KV",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    }
+  ]
+}
