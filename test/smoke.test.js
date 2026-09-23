@@ -227,3 +227,53 @@ test('следующий запрос снова пробует Gemini, а не 
     restored();
   }
 });
+
+test('при пустом ответе Gemini повторяет запрос в экономичном режиме', async () => {
+  // Первый вызов (обычный режим) возвращает пустой текст — весь бюджет
+  // ушёл на «размышления». Второй вызов, с минимальными размышлениями,
+  // обязан ответить, и до резервного провайдера дело дойти не должно.
+  const originalFetch = globalThis.fetch;
+  let call = 0;
+
+  globalThis.fetch = async () => {
+    call += 1;
+    const payload =
+      call === 1
+        ? { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }] }
+        : {
+            candidates: [
+              {
+                finishReason: 'STOP',
+                content: { parts: [{ text: 'ответ в экономичном режиме' }] },
+              },
+            ],
+          };
+    const body = JSON.stringify(payload);
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+  };
+
+  try {
+    const { askAI } = await import('../src/ai.js');
+    let cloudflareCalled = false;
+
+    const result = await askAI(
+      {
+        GEMINI_API_KEY: 'test-key',
+        AI: {
+          run: async () => {
+            cloudflareCalled = true;
+            return { response: 'резерв' };
+          },
+        },
+      },
+      { prompt: 'тест', maxTokens: 100 }
+    );
+
+    assert.equal(result.text, 'ответ в экономичном режиме');
+    assert.match(result.provider, /generateContent\+low/);
+    assert.equal(cloudflareCalled, false, 'До резервного провайдера дойти не должно');
+    assert.equal(call, 2, 'Должно быть ровно две попытки');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -117,18 +117,31 @@ async function askGemini(env, { system, prompt, maxTokens }) {
   }
 
   const model = resolveGeminiModel(env);
+  const request = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+  };
+  // Gemini 3.x тратит часть лимита на внутренние «размышления».
+  // При тесном лимите ответ приходит пустым, и бот молча уходит на резерв.
+  const outputLimit = Math.max(maxTokens * 4, 4096);
+
   const attempts = [
     {
       api: 'generateContent',
       path: `models/${model}:generateContent`,
+      payload: { ...request, generationConfig: { maxOutputTokens: outputLimit, temperature: 0.3 } },
+    },
+    {
+      // Страховка: тот же запрос, но с минимальными «размышлениями».
+      // Если весь бюджет вывода был съеден ими, этот вариант успеет ответить.
+      api: 'generateContent+low',
+      path: `models/${model}:generateContent`,
       payload: {
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+        ...request,
         generationConfig: {
-          // Gemini 3.x тратит часть лимита на внутренние «размышления».
-          // При тесном лимите ответ приходит пустым, и бот молча уходит на резерв.
-          maxOutputTokens: Math.max(maxTokens * 4, 4096),
+          maxOutputTokens: outputLimit,
           temperature: 0.3,
+          thinkingConfig: { thinkingLevel: 'LOW' },
         },
       },
     },
@@ -144,19 +157,23 @@ async function askGemini(env, { system, prompt, maxTokens }) {
 
   const errors = [];
   for (const attempt of attempts) {
+    const startedAt = Date.now();
     try {
       const result = await geminiPost(env, attempt.path, attempt.payload);
+      const took = Date.now() - startedAt;
+
       if (result.text) {
         return { text: result.text, provider: `Gemini ${model} · ${attempt.api}`, errors };
       }
 
       const detail = describeEmptyResult(result);
       errors.push(`${attempt.api}: пустой ответ (${detail})`);
-      console.error(`Gemini ${attempt.api}: пустой ответ. ${detail}`);
+      console.error(`Gemini ${attempt.api}: пустой ответ за ${took} мс. ${detail}`);
     } catch (error) {
+      const took = Date.now() - startedAt;
       const message = errorText(error);
       errors.push(`${attempt.api}: ${message}`);
-      console.error(`Gemini ${attempt.api} не сработал: ${message}`);
+      console.error(`Gemini ${attempt.api} не сработал за ${took} мс: ${message}`);
     }
   }
 
