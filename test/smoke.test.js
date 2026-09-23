@@ -129,3 +129,101 @@ test('дубли репозиториев при пагинации GitHub от�
     globalThis.fetch = originalFetch;
   }
 });
+
+/** Подменяет ответ Gemini на заданный и возвращает функцию восстановления. */
+function mockGeminiResponse(payload) {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    const body = JSON.stringify(payload);
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+  };
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+}
+
+test('ответ Gemini имеет приоритет над резервным провайдером', async () => {
+  const restore = mockGeminiResponse({
+    candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'ответ от Gemini' }] } }],
+  });
+
+  let cloudflareCalled = false;
+  try {
+    const { askAI } = await import('../src/ai.js');
+    const result = await askAI(
+      {
+        GEMINI_API_KEY: 'test-key',
+        AI: {
+          run: async () => {
+            cloudflareCalled = true;
+            return { response: 'резерв' };
+          },
+        },
+      },
+      { prompt: 'тест', maxTokens: 100 }
+    );
+
+    assert.equal(result.text, 'ответ от Gemini');
+    assert.match(result.provider, /Gemini/);
+    assert.equal(cloudflareCalled, false, 'Резерв не должен вызываться, если Gemini ответил');
+  } finally {
+    restore();
+  }
+});
+
+test('пустой ответ Gemini приводит к откату на Workers AI', async () => {
+  // Так выглядит исчерпанный лимит вывода: HTTP 200, но текст пустой,
+  // потому что весь бюджет ушёл на внутренние «размышления» модели.
+  const restore = mockGeminiResponse({
+    candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }],
+    usageMetadata: { promptTokenCount: 1200, thoughtsTokenCount: 4096, candidatesTokenCount: 0 },
+  });
+
+  try {
+    const { askAI } = await import('../src/ai.js');
+    const result = await askAI(
+      {
+        GEMINI_API_KEY: 'test-key',
+        AI: { run: async () => ({ response: 'ответ от резерва' }) },
+      },
+      { prompt: 'тест', maxTokens: 100 }
+    );
+
+    assert.ok(result, 'Должен вернуться ответ резервного провайдера');
+    assert.equal(result.text, 'ответ от резерва');
+    assert.match(result.provider, /Workers AI/);
+  } finally {
+    restore();
+  }
+});
+
+test('следующий запрос снова пробует Gemini, а не остаётся на резерве', async () => {
+  // Проверяем отсутствие «залипшего» состояния: после неудачи Gemini
+  // следующий вызов обязан снова обратиться к нему первым.
+  const env = {
+    GEMINI_API_KEY: 'test-key',
+    AI: { run: async () => ({ response: 'резерв' }) },
+  };
+  const { askAI } = await import('../src/ai.js');
+
+  const failed = mockGeminiResponse({
+    candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }],
+  });
+  try {
+    const first = await askAI(env, { prompt: 'тест', maxTokens: 100 });
+    assert.match(first.provider, /Workers AI/, 'Первый вызов должен уйти на резерв');
+  } finally {
+    failed();
+  }
+
+  const restored = mockGeminiResponse({
+    candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'снова Gemini' }] } }],
+  });
+  try {
+    const second = await askAI(env, { prompt: 'тест', maxTokens: 100 });
+    assert.equal(second.text, 'снова Gemini', 'Второй вызов обязан снова использовать Gemini');
+    assert.match(second.provider, /Gemini/);
+  } finally {
+    restored();
+  }
+});

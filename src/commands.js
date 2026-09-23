@@ -405,6 +405,24 @@ async function sendStatus(env, chatId) {
   await sendTelegramMessage(env, chatId, lines.join('\n'), mainMenuKeyboard());
 }
 
+/** Строки отчёта об одной проверке Gemini. */
+function formatGeminiTest(test) {
+  if (test.ok) {
+    const result = [
+      `✅ Ответ за ${test.ms} мс`,
+      `• Способ: <code>${escapeHtml(test.provider ?? '—')}</code>`,
+    ];
+    if (test.sample) result.push(`• Ответ: ${escapeHtml(truncate(test.sample, 120))}`);
+    return result;
+  }
+
+  const result = ['❌ Нет ответа — бот уходит на резервный Workers AI'];
+  for (const error of test.errors.slice(0, 4)) {
+    result.push(`• <code>${escapeHtml(truncate(error, 220))}</code>`);
+  }
+  return result;
+}
+
 /** Проверка Gemini: отвечает ли модель и какие модели доступны ключу. */
 async function sendAiStatus(env, chatId) {
   const model = resolveGeminiModel(env);
@@ -423,20 +441,22 @@ async function sendAiStatus(env, chatId) {
     return;
   }
 
-  await sendTelegramMessage(env, chatId, '⏳ Проверяю связь с Gemini...');
+  await sendTelegramMessage(env, chatId, '⏳ Проверяю связь с Gemini — две проверки...');
 
-  const test = await testGemini(env);
-  lines.push('', '<b>Проверка связи:</b>');
+  const quick = await testGemini(env);
+  const realistic = await testGemini(env, { realistic: true });
 
-  if (test.ok) {
-    lines.push(`✅ Ответ получен за ${test.ms} мс`);
-    lines.push(`• Способ: <code>${escapeHtml(test.provider ?? '—')}</code>`);
-    if (test.sample) lines.push(`• Ответ: ${escapeHtml(truncate(test.sample, 120))}`);
-  } else {
-    lines.push('❌ Gemini не ответил — бот использует резервный Workers AI.');
-    for (const error of test.errors.slice(0, 4)) {
-      lines.push(`• <code>${escapeHtml(truncate(error, 200))}</code>`);
-    }
+  lines.push('', '<b>1. Короткий запрос:</b>', ...formatGeminiTest(quick));
+  lines.push('', '<b>2. Боевой запрос (инструкция + длинный контекст):</b>');
+  lines.push(...formatGeminiTest(realistic));
+
+  if (quick.ok && !realistic.ok) {
+    lines.push(
+      '',
+      '⚠️ <b>Короткий запрос проходит, а боевой — нет.</b>',
+      'Именно поэтому ответы приходят от резервного Workers AI.',
+      'Причина указана в ошибке выше; подробности также есть в логах воркера.'
+    );
   }
 
   try {

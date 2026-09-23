@@ -67,7 +67,42 @@ async function geminiPost(env, path, payload) {
     throw new Error(`некорректный JSON: ${truncate(raw, 120)}`);
   }
 
-  return extractGeminiText(data);
+  const candidate = data?.candidates?.[0];
+  return {
+    text: extractGeminiText(data),
+    finishReason: candidate?.finishReason ?? null,
+    blockReason: data?.promptFeedback?.blockReason ?? null,
+    partsCount: candidate?.content?.parts?.length ?? 0,
+    usage: data?.usageMetadata ?? null,
+  };
+}
+
+/**
+ * Расшифровка пустого ответа Gemini.
+ *
+ * Без неё причина отката на резервного провайдера остаётся невидимой:
+ * модель может ответить «успешно» (HTTP 200), но с пустым текстом,
+ * если весь лимит вывода ушёл на внутренние «размышления».
+ */
+function describeEmptyResult(result) {
+  const bits = [`finishReason=${result.finishReason ?? '—'}`, `частей=${result.partsCount}`];
+
+  if (result.blockReason) bits.push(`blockReason=${result.blockReason}`);
+
+  const usage = result.usage;
+  if (usage) {
+    bits.push(
+      `вход=${usage.promptTokenCount ?? '—'}`,
+      `размышления=${usage.thoughtsTokenCount ?? 0}`,
+      `ответ=${usage.candidatesTokenCount ?? 0}`
+    );
+  }
+
+  if (result.finishReason === 'MAX_TOKENS') {
+    bits.push('→ лимит вывода исчерпан, увеличьте maxOutputTokens');
+  }
+
+  return bits.join(', ');
 }
 
 /**
@@ -90,8 +125,9 @@ async function askGemini(env, { system, prompt, maxTokens }) {
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
         generationConfig: {
-          // Запас на «размышления» модели, иначе ответ обрежется
-          maxOutputTokens: Math.max(maxTokens * 2, 1024),
+          // Gemini 3.x тратит часть лимита на внутренние «размышления».
+          // При тесном лимите ответ приходит пустым, и бот молча уходит на резерв.
+          maxOutputTokens: Math.max(maxTokens * 4, 4096),
           temperature: 0.3,
         },
       },
@@ -109,9 +145,14 @@ async function askGemini(env, { system, prompt, maxTokens }) {
   const errors = [];
   for (const attempt of attempts) {
     try {
-      const text = await geminiPost(env, attempt.path, attempt.payload);
-      if (text) return { text, provider: `Gemini ${model} · ${attempt.api}`, errors };
-      errors.push(`${attempt.api}: пустой ответ`);
+      const result = await geminiPost(env, attempt.path, attempt.payload);
+      if (result.text) {
+        return { text: result.text, provider: `Gemini ${model} · ${attempt.api}`, errors };
+      }
+
+      const detail = describeEmptyResult(result);
+      errors.push(`${attempt.api}: пустой ответ (${detail})`);
+      console.error(`Gemini ${attempt.api}: пустой ответ. ${detail}`);
     } catch (error) {
       const message = errorText(error);
       errors.push(`${attempt.api}: ${message}`);
@@ -215,16 +256,35 @@ ${context}
   return result ?? { text: 'Не удалось получить ответ от ИИ. Попробуйте позже.', provider: null };
 }
 
-/** Проверка связи с Gemini — для команды /ai. */
-export async function testGemini(env) {
+/**
+ * Проверка связи с Gemini — для команды /ai.
+ *
+ * В «реалистичном» режиме повторяет условия боевого запроса: системная инструкция,
+ * длинный контекст и большой лимит вывода. Короткая проверка может проходить там,
+ * где настоящий запрос стабильно падает, — поэтому нужны оба варианта.
+ */
+export async function testGemini(env, { realistic = false } = {}) {
   const model = resolveGeminiModel(env);
   const started = Date.now();
-  const result = await askGemini(env, {
-    prompt: 'Ответь ровно одним словом: работает',
-    maxTokens: 64,
-  });
+
+  const options = realistic
+    ? {
+        system: 'Ты профессиональный DevOps-инженер и системный архитектор.',
+        prompt:
+          'Пользователь задаёт технический вопрос по GitHub-репозиторию "example/project".\n\n' +
+          'Контекст проекта (описание / README):\n' +
+          'Это тестовый контекст, по объёму близкий к настоящему README проекта. '.repeat(40) +
+          '\n\nВопрос пользователя: "Что делает этот проект?"\n\n' +
+          'Ответь кратко, точечно и строго на русском языке.',
+        maxTokens: 700,
+      }
+    : { prompt: 'Ответь ровно одним словом: работает', maxTokens: 64 };
+
+  const result = await askGemini(env, options);
+
   return {
     model,
+    realistic,
     ok: Boolean(result.text),
     provider: result.provider,
     ms: Date.now() - started,
