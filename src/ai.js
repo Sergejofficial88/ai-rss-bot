@@ -142,8 +142,13 @@ async function askGemini(env, { system, prompt, maxTokens }) {
   // При тесном лимите ответ приходит пустым, и бот молча уходит на резерв.
   const outputLimit = Math.max(maxTokens * 4, 4096);
 
-  const attempts = [
-    {
+  // Lite-модели не поддерживают «размышления», поэтому thinkingConfig
+  // для них не отправляем — иначе тратим попытку на заведомо ошибочный запрос.
+  const isLiteModel = /lite/i.test(model);
+  const attempts = [];
+
+  if (!isLiteModel) {
+    attempts.push({
       // Экономичный режим идёт первым: «размышления» по умолчанию (medium)
       // занимают десятки секунд, из-за чего ответ не успевал уложиться
       // в бюджет запроса и терялся.
@@ -157,9 +162,11 @@ async function askGemini(env, { system, prompt, maxTokens }) {
           thinkingConfig: { thinkingLevel: 'LOW' },
         },
       },
-    },
+    });
+  }
+
+  attempts.push(
     {
-      // Если платформа не приняла thinkingConfig — обычный режим.
       api: 'generateContent',
       path: `models/${model}:generateContent`,
       payload: { ...request, generationConfig: { maxOutputTokens: outputLimit, temperature: 0.3 } },
@@ -171,8 +178,8 @@ async function askGemini(env, { system, prompt, maxTokens }) {
         model,
         input: system ? `${system}\n\n${prompt}` : prompt,
       },
-    },
-  ];
+    }
+  );
 
   const errors = [];
   for (const attempt of attempts) {
