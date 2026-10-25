@@ -231,11 +231,21 @@ async function askCloudflare(env, { system, prompt, maxTokens }) {
  * Возвращает { text, provider } либо null, если недоступны оба провайдера.
  */
 export async function askAI(env, options) {
+  const startedAt = Date.now();
+
   const gemini = await askGemini(env, options);
-  if (gemini.text) return { text: gemini.text, provider: gemini.provider };
+  if (gemini.text) {
+    // Логируем и успех: иначе в логах видно только ошибки, и по ним нельзя
+    // понять, какая модель реально ответила и сколько это заняло.
+    console.log(`ИИ ответил: ${gemini.provider} за ${Date.now() - startedAt} мс`);
+    return { text: gemini.text, provider: gemini.provider };
+  }
 
   const cloudflare = await askCloudflare(env, options);
-  if (cloudflare.text) return { text: cloudflare.text, provider: cloudflare.provider };
+  if (cloudflare.text) {
+    console.log(`ИИ ответил (резерв): ${cloudflare.provider} за ${Date.now() - startedAt} мс`);
+    return { text: cloudflare.text, provider: cloudflare.provider };
+  }
 
   console.error(
     'Оба провайдера ИИ недоступны:',
