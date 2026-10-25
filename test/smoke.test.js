@@ -228,24 +228,23 @@ test('следующий запрос снова пробует Gemini, а не 
   }
 });
 
-test('при пустом ответе Gemini повторяет запрос в экономичном режиме', async () => {
-  // Первый вызов (обычный режим) возвращает пустой текст — весь бюджет
-  // ушёл на «размышления». Второй вызов, с минимальными размышлениями,
-  // обязан ответить, и до резервного провайдера дело дойти не должно.
+test('Gemini сначала идёт в экономичном режиме, затем в обычном', async () => {
+  // Порядок принципиален: «размышления» по умолчанию (medium) занимают десятки
+  // секунд и не давали ответу уложиться в бюджет запроса. Поэтому экономичный
+  // режим обязан идти первым, а обычный — только как запасной вариант.
   const originalFetch = globalThis.fetch;
   let call = 0;
+  const sentBodies = [];
 
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (_url, init) => {
     call += 1;
+    sentBodies.push(JSON.parse(init.body));
     const payload =
       call === 1
         ? { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }] }
         : {
             candidates: [
-              {
-                finishReason: 'STOP',
-                content: { parts: [{ text: 'ответ в экономичном режиме' }] },
-              },
+              { finishReason: 'STOP', content: { parts: [{ text: 'ответ во втором режиме' }] } },
             ],
           };
     const body = JSON.stringify(payload);
@@ -269,8 +268,9 @@ test('при пустом ответе Gemini повторяет запрос в
       { prompt: 'тест', maxTokens: 100 }
     );
 
-    assert.equal(result.text, 'ответ в экономичном режиме');
-    assert.match(result.provider, /generateContent\+low/);
+    assert.equal(sentBodies[0].generationConfig.thinkingConfig.thinkingLevel, 'LOW');
+    assert.equal(sentBodies[1].generationConfig.thinkingConfig, undefined);
+    assert.equal(result.text, 'ответ во втором режиме');
     assert.equal(cloudflareCalled, false, 'До резервного провайдера дойти не должно');
     assert.equal(call, 2, 'Должно быть ровно две попытки');
   } finally {

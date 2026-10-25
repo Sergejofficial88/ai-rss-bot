@@ -44,6 +44,22 @@ function extractGeminiText(data) {
   return '';
 }
 
+/**
+ * Верхняя граница ожидания ответа Gemini.
+ * Онлайн-вызов не должен съедать весь бюджет запроса: если модель задумалась,
+ * быстрее перейти к следующему варианту или к резервному провайдеру.
+ */
+const GEMINI_TIMEOUT_MS = 12000;
+
+/** AbortSignal с таймаутом; если платформа не поддерживает — обычный запрос. */
+function timeoutSignal(ms) {
+  try {
+    return AbortSignal.timeout(ms);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Запрос к Gemini. Ключ передаём заголовком, а не в URL — так он не попадает в логи. */
 async function geminiPost(env, path, payload) {
   const response = await fetch(`${GEMINI_BASE}/${path}`, {
@@ -53,6 +69,7 @@ async function geminiPost(env, path, payload) {
       'x-goog-api-key': env.GEMINI_API_KEY,
     },
     body: JSON.stringify(payload),
+    signal: timeoutSignal(GEMINI_TIMEOUT_MS),
   });
 
   const raw = await response.text();
@@ -127,13 +144,9 @@ async function askGemini(env, { system, prompt, maxTokens }) {
 
   const attempts = [
     {
-      api: 'generateContent',
-      path: `models/${model}:generateContent`,
-      payload: { ...request, generationConfig: { maxOutputTokens: outputLimit, temperature: 0.3 } },
-    },
-    {
-      // Страховка: тот же запрос, но с минимальными «размышлениями».
-      // Если весь бюджет вывода был съеден ими, этот вариант успеет ответить.
+      // Экономичный режим идёт первым: «размышления» по умолчанию (medium)
+      // занимают десятки секунд, из-за чего ответ не успевал уложиться
+      // в бюджет запроса и терялся.
       api: 'generateContent+low',
       path: `models/${model}:generateContent`,
       payload: {
@@ -144,6 +157,12 @@ async function askGemini(env, { system, prompt, maxTokens }) {
           thinkingConfig: { thinkingLevel: 'LOW' },
         },
       },
+    },
+    {
+      // Если платформа не приняла thinkingConfig — обычный режим.
+      api: 'generateContent',
+      path: `models/${model}:generateContent`,
+      payload: { ...request, generationConfig: { maxOutputTokens: outputLimit, temperature: 0.3 } },
     },
     {
       api: 'interactions',

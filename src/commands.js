@@ -77,6 +77,18 @@ export async function handleTelegramMessage(env, message) {
     return;
   }
 
+  // Мгновенная проверка связи: не трогает ИИ, GitHub и KV.
+  // Если «Понг» не приходит — проблема в доставке обновлений, а не в модели.
+  if (text === '/ping') {
+    await sendTelegramMessage(
+      env,
+      chatId,
+      `🏓 <b>Понг</b>\n<code>${new Date().toISOString()}</code>\n\n` +
+        'Обновление дошло до воркера: вебхук и проверка секрета работают.'
+    );
+    return;
+  }
+
   if (text === '/status') {
     await sendStatus(env, chatId);
     return;
