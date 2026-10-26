@@ -50,9 +50,23 @@ wrangler.jsonc     — конфигурация Cloudflare Worker
 | `GITHUB_USERNAME` | да | Логин GitHub, чьё избранное отслеживаем |
 | `GITHUB_TOKEN` | да | Personal Access Token (scope `read:user`) |
 | `GEMINI_API_KEY` | нет | Ключ Google AI Studio. Без него работает Workers AI |
-| `GEMINI_MODEL` | нет | **Переменная** (не секрет): какую модель Gemini использовать. По умолчанию `gemini-3.8-flash` |
+| `GEMINI_MODEL` | нет | **Переменная** (не секрет): модель Gemini. Задана в `wrangler.jsonc`, по умолчанию `gemini-flash-lite-latest` |
 | `RUN_TOKEN` | нет | Защищает ручной запуск `/run?token=...` |
 | `TELEGRAM_WEBHOOK_SECRET` | нет | Проверка подлинности вебхука Telegram |
+
+### Почему lite, а не `gemini-3.8-flash`
+
+У `gemini-3.8-flash` на Free Tier всего **20 запросов в сутки на проект**. Этого не хватает:
+квота выгорает за пару диалогов, и бот уходит на резервный Workers AI.
+
+Подписка **Google AI Pro не помогает**: по [официальной документации](https://ai.google.dev/gemini-api/docs/google-ai-plans)
+её льготы действуют только внутри веб-интерфейса AI Studio, но не для API-ключей.
+
+> Direct use of the Gemini API (such as using API keys or external applications)
+> is billed and managed separately.
+
+Лимит API определяется уровнем проекта: **Free → Tier 1** при подключении Cloud Billing.
+После этого можно вернуть `gemini-3.8-flash` — при 1–3 запросах в сутки это меньше 1 USD в месяц.
 
 ---
 
