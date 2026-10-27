@@ -1,5 +1,5 @@
 import { GITHUB_API_URL, GITHUB_GRAPHQL_URL } from './config.js';
-import { truncate } from './utils.js';
+import { errorText, truncate } from './utils.js';
 
 /** Заголовки для GitHub API. */
 export function githubHeaders(env) {
@@ -60,6 +60,52 @@ function pickLatestRelease(nodes) {
   };
 }
 
+/** Пауза между повторами: ожидание — это I/O, процессорное время не тратится. */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Задержки между повторами при временных сбоях GitHub. */
+const RETRY_DELAYS_MS = [400, 1200];
+
+/**
+ * Запрос к GitHub с повтором при временных сбоях.
+ *
+ * Коды 5xx (включая 522 — таймаут на стороне Cloudflare) и 429 означают,
+ * что проблема на стороне GitHub и обычно проходит за секунды. Без повтора
+ * один такой сбой валит всю проверку по расписанию и присылает ошибку в чат.
+ */
+async function fetchGitHub(url, init) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      const transient = response.status >= 500 || response.status === 429;
+
+      if (transient && attempt < RETRY_DELAYS_MS.length) {
+        const delay = RETRY_DELAYS_MS[attempt];
+        console.log(`GitHub ответил ${response.status}, повтор через ${delay} мс`);
+        await sleep(delay);
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt < RETRY_DELAYS_MS.length) {
+        const delay = RETRY_DELAYS_MS[attempt];
+        console.log(`GitHub недоступен (${errorText(error)}), повтор через ${delay} мс`);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError ?? new Error('GitHub: не удалось выполнить запрос');
+}
+
 /**
  * Список избранных репозиториев вместе с их последними релизами.
  *
@@ -80,7 +126,7 @@ export async function fetchStarredWithReleases(env) {
 
   // Защита от бесконечного цикла: 10 страниц × 100 = 1000 репозиториев.
   for (let page = 0; page < 10; page++) {
-    const response = await fetch(GITHUB_GRAPHQL_URL, {
+    const response = await fetchGitHub(GITHUB_GRAPHQL_URL, {
       method: 'POST',
       headers: { ...githubHeaders(env), 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: STARRED_QUERY, variables: { login, cursor } }),
@@ -139,7 +185,7 @@ export async function fetchStarredWithReleases(env) {
 
 /** Полный текст последнего релиза — запрашивается только для действительно новых релизов. */
 export async function fetchLatestReleaseBody(env, fullName) {
-  const response = await fetch(`${GITHUB_API_URL}/repos/${fullName}/releases/latest`, {
+  const response = await fetchGitHub(`${GITHUB_API_URL}/repos/${fullName}/releases/latest`, {
     headers: githubHeaders(env),
   });
   if (!response.ok) return '';
@@ -149,7 +195,7 @@ export async function fetchLatestReleaseBody(env, fullName) {
 
 /** Информация о репозитории — для режима вопросов к ИИ. */
 export async function fetchRepoInfo(env, fullName) {
-  const response = await fetch(`${GITHUB_API_URL}/repos/${fullName}`, {
+  const response = await fetchGitHub(`${GITHUB_API_URL}/repos/${fullName}`, {
     headers: githubHeaders(env),
   });
   if (!response.ok) return null;
@@ -158,7 +204,7 @@ export async function fetchRepoInfo(env, fullName) {
 
 /** Текст README — для режима вопросов к ИИ. */
 export async function fetchRepoReadme(env, fullName) {
-  const response = await fetch(`${GITHUB_API_URL}/repos/${fullName}/readme`, {
+  const response = await fetchGitHub(`${GITHUB_API_URL}/repos/${fullName}/readme`, {
     headers: { ...githubHeaders(env), Accept: 'application/vnd.github.v3.raw' },
   });
   if (!response.ok) return '';

@@ -277,3 +277,51 @@ test('Gemini сначала идёт в экономичном режиме, з�
     globalThis.fetch = originalFetch;
   }
 });
+
+test('временный сбой GitHub (522) не валит проверку — срабатывает повтор', async () => {
+  // Ровно это случилось 26 октября: GitHub вернул 522, и проверка по расписанию
+  // падала с ошибкой. Теперь такой ответ приводит к повтору, а не к сбою.
+  const originalFetch = globalThis.fetch;
+  let call = 0;
+
+  const page = {
+    totalCount: 1,
+    pageInfo: { hasNextPage: false, endCursor: null },
+    edges: [
+      {
+        starredAt: '2026-01-01T00:00:00Z',
+        node: {
+          nameWithOwner: 'a/one',
+          description: '',
+          url: 'https://github.com/a/one',
+          isArchived: false,
+          releases: { nodes: [] },
+        },
+      },
+    ],
+  };
+
+  globalThis.fetch = async () => {
+    call += 1;
+    if (call === 1) {
+      return {
+        ok: false,
+        status: 522,
+        text: async () => 'error code: 522',
+        json: async () => ({}),
+      };
+    }
+    const body = JSON.stringify({ data: { user: { starredRepositories: page } } });
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+  };
+
+  try {
+    const { fetchStarredWithReleases } = await import('../src/github.js');
+    const result = await fetchStarredWithReleases({ GITHUB_USERNAME: 'u', GITHUB_TOKEN: 't' });
+
+    assert.equal(result.repos.length, 1, 'После повтора данные должны быть получены');
+    assert.equal(call, 2, 'Должен быть ровно один повтор');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

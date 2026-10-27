@@ -21,17 +21,45 @@ async function reportFailure(env, chatId, error) {
   }
 }
 
+/**
+ * Уведомление о сбое cron — не чаще одного раза в час.
+ * Иначе при длительной недоступности GitHub бот присылает ошибку каждые 15 минут.
+ */
+const CRON_ERROR_NOTICE_INTERVAL_MS = 60 * 60 * 1000;
+
+async function notifyCronFailure(env, error) {
+  console.error('Ошибка авто-проверки:', error);
+
+  const key = 'meta:last_cron_error_notice';
+  const now = Date.now();
+
+  try {
+    const last = await env.RELEASES_KV.get(key);
+    if (last && now - Number(last) < CRON_ERROR_NOTICE_INTERVAL_MS) {
+      console.log('Повторный сбой cron — уведомление подавлено (прошло меньше часа)');
+      return;
+    }
+    await env.RELEASES_KV.put(key, String(now));
+  } catch (kvError) {
+    // Если KV недоступен, лучше уведомить, чем промолчать.
+    console.error('Не удалось проверить время прошлого уведомления:', errorText(kvError));
+  }
+
+  await sendTelegramMessage(
+    env,
+    env.ALLOWED_TELEGRAM_ID,
+    `<b>⚠️ Ошибка авто-проверки (Cron):</b>\n<code>${escapeHtml(errorText(error))}</code>\n\n` +
+      '<i>Следующее такое уведомление — не раньше чем через час.</i>'
+  );
+}
+
 export default {
   /** Автоматическая проверка по расписанию (Cron Trigger). */
   async scheduled(_event, env) {
     try {
       await runCheck(env);
     } catch (error) {
-      await sendTelegramMessage(
-        env,
-        env.ALLOWED_TELEGRAM_ID,
-        `<b>⚠️ Ошибка авто-проверки (Cron):</b>\n<code>${escapeHtml(errorText(error))}</code>`
-      );
+      await notifyCronFailure(env, error);
     }
   },
 
