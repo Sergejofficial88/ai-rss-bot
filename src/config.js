@@ -35,11 +35,13 @@ export const MAX_AI_CALLS_PER_RUN = 8;
 
 /**
  * ИИ-модели.
- * Gemini — основная модель; её можно переопределить секретом `GEMINI_MODEL`
- * (например: gemini-3.8-flash, gemini-3.7-flash, gemini-3.5-flash-lite).
+ * Gemini — основная модель; переопределяется переменной `GEMINI_MODEL`.
+ * Значение по умолчанию выбрано по фактам из логов: `gemini-3.8-flash` упирается
+ * в 20 запросов в сутки, `gemini-flash-lite-latest` зависает, `gemini-2.5-flash-lite`
+ * закрыт для новых пользователей. Отвечает `gemini-3.5-flash-lite`.
  * Workers AI — резервный провайдер, работает без внешних запросов.
  */
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const CF_AI_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
 /** Ключи состояния в KV. */

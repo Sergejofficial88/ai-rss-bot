@@ -258,6 +258,8 @@ test('Gemini сначала идёт в экономичном режиме, з�
     const result = await askAI(
       {
         GEMINI_API_KEY: 'test-key',
+        // Модель без «lite» в имени: только у них есть режим размышлений.
+        GEMINI_MODEL: 'gemini-3.8-flash',
         AI: {
           run: async () => {
             cloudflareCalled = true;
@@ -321,6 +323,68 @@ test('временный сбой GitHub (522) не валит проверку 
 
     assert.equal(result.repos.length, 1, 'После повтора данные должны быть получены');
     assert.equal(call, 2, 'Должен быть ровно один повтор');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('проверка модели подставляет её имя в URL', async () => {
+  // Команда /ai <модель> позволяет перебрать варианты без передеплоя,
+  // поэтому имя из параметра обязано попадать в запрос.
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+
+  globalThis.fetch = async (url) => {
+    requestedUrl = String(url);
+    const body = JSON.stringify({
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'ок' }] } }],
+    });
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+  };
+
+  try {
+    const { testGemini } = await import('../src/ai.js');
+    const result = await testGemini(
+      { GEMINI_API_KEY: 'test-key' },
+      { model: 'gemini-2.5-flash-lite' }
+    );
+
+    assert.match(requestedUrl, /models\/gemini-2\.5-flash-lite:generateContent/);
+    assert.equal(result.ok, true);
+    assert.equal(result.model, 'gemini-2.5-flash-lite');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('для lite-модели thinkingConfig не отправляется', async () => {
+  // Lite-модели не умеют «размышлять»: попытка с thinkingConfig тратилась бы
+  // впустую на лишний запрос, поэтому для них сразу идёт обычный режим.
+  const originalFetch = globalThis.fetch;
+  const sentBodies = [];
+
+  globalThis.fetch = async (_url, init) => {
+    sentBodies.push(JSON.parse(init.body));
+    const body = JSON.stringify({
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'ок' }] } }],
+    });
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+  };
+
+  try {
+    const { askAI } = await import('../src/ai.js');
+    const result = await askAI(
+      {
+        GEMINI_API_KEY: 'test-key',
+        GEMINI_MODEL: 'gemini-3.5-flash-lite',
+        AI: { run: async () => ({ response: 'резерв' }) },
+      },
+      { prompt: 'тест', maxTokens: 100 }
+    );
+
+    assert.equal(sentBodies[0].generationConfig.thinkingConfig, undefined);
+    assert.equal(sentBodies.length, 1, 'Должна быть ровно одна попытка — обычный режим');
+    assert.equal(result.text, 'ок');
   } finally {
     globalThis.fetch = originalFetch;
   }

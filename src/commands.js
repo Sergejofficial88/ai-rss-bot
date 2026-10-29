@@ -1,4 +1,10 @@
-import { answerRepoQuestion, listGeminiModels, resolveGeminiModel, testGemini } from './ai.js';
+import {
+  answerRepoQuestion,
+  listGeminiModels,
+  resolveGeminiModel,
+  testCloudflare,
+  testGemini,
+} from './ai.js';
 import {
   ASK_TTL_SECONDS,
   CALLBACK_DATA_LIMIT,
@@ -94,8 +100,10 @@ export async function handleTelegramMessage(env, message) {
     return;
   }
 
-  if (text === '/ai') {
-    await sendAiStatus(env, chatId);
+  // /ai — полная проверка; /ai <модель> — проверка конкретной модели.
+  if (text === '/ai' || text.startsWith('/ai ')) {
+    const requestedModel = text.split(/\s+/)[1] || null;
+    await sendAiStatus(env, chatId, requestedModel);
     return;
   }
 
@@ -417,8 +425,8 @@ async function sendStatus(env, chatId) {
   await sendTelegramMessage(env, chatId, lines.join('\n'), mainMenuKeyboard());
 }
 
-/** Строки отчёта об одной проверке Gemini. */
-function formatGeminiTest(test) {
+/** Строки отчёта об одной проверке провайдера. */
+function formatAiTest(test) {
   if (test.ok) {
     const result = [
       `✅ Ответ за ${test.ms} мс`,
@@ -428,7 +436,7 @@ function formatGeminiTest(test) {
     return result;
   }
 
-  const result = ['❌ Нет ответа — бот уходит на резервный Workers AI'];
+  const result = ['❌ Нет ответа'];
   for (const error of test.errors.slice(0, 4)) {
     result.push(`• <code>${escapeHtml(truncate(error, 220))}</code>`);
   }
@@ -436,16 +444,20 @@ function formatGeminiTest(test) {
 }
 
 /** Проверка Gemini: отвечает ли модель и какие модели доступны ключу. */
-async function sendAiStatus(env, chatId) {
-  const model = resolveGeminiModel(env);
+async function sendAiStatus(env, chatId, requestedModel = null) {
+  const configuredModel = resolveGeminiModel(env);
 
   const lines = [
     '<b>🤖 Состояние ИИ</b>',
     '',
-    `• Настроенная модель: <code>${escapeHtml(model)}</code>`,
+    `• Настроенная модель: <code>${escapeHtml(configuredModel)}</code>`,
     `• Ключ Gemini: ${env.GEMINI_API_KEY ? '✅ задан' : '❌ не задан'}`,
     `• Workers AI: ${env.AI ? '✅ доступен' : '❌ недоступен'}`,
   ];
+
+  if (requestedModel) {
+    lines.push(`• Проверяемая модель: <code>${escapeHtml(requestedModel)}</code>`);
+  }
 
   if (!env.GEMINI_API_KEY) {
     lines.push('', 'Без ключа используется только Workers AI.');
@@ -453,21 +465,66 @@ async function sendAiStatus(env, chatId) {
     return;
   }
 
-  await sendTelegramMessage(env, chatId, '⏳ Проверяю связь с Gemini — две проверки...');
+  await sendTelegramMessage(
+    env,
+    chatId,
+    requestedModel
+      ? `⏳ Проверяю модель ${requestedModel}...`
+      : '⏳ Проверяю Gemini и резервный Workers AI...'
+  );
 
-  const quick = await testGemini(env);
-  const realistic = await testGemini(env, { realistic: true });
+  // При указанной модели проверяем только её — так можно перебрать варианты
+  // без передеплоя: /ai gemini-2.5-flash-lite, /ai gemini-3.1-flash-lite и т.д.
+  // Запускаем параллельно, иначе при таймаутах проверка занимает около минуты.
+  const [quick, realistic, reserve] = await Promise.all([
+    testGemini(env, requestedModel ? { model: requestedModel } : {}),
+    requestedModel ? Promise.resolve(null) : testGemini(env, { realistic: true }),
+    testCloudflare(env),
+  ]);
 
-  lines.push('', '<b>1. Короткий запрос:</b>', ...formatGeminiTest(quick));
-  lines.push('', '<b>2. Боевой запрос (инструкция + длинный контекст):</b>');
-  lines.push(...formatGeminiTest(realistic));
+  if (requestedModel) {
+    lines.push(
+      '',
+      `<b>1. Модель <code>${escapeHtml(requestedModel)}</code>:</b>`,
+      ...formatAiTest(quick)
+    );
+  } else {
+    lines.push('', '<b>1. Gemini — короткий запрос:</b>', ...formatAiTest(quick));
+    lines.push('', '<b>2. Gemini — боевой запрос:</b>', ...formatAiTest(realistic));
+  }
 
-  if (quick.ok && !realistic.ok) {
+  lines.push(
+    '',
+    `<b>${requestedModel ? 2 : 3}. Резерв — Workers AI:</b>`,
+    ...formatAiTest(reserve)
+  );
+
+  const geminiOk = quick.ok || Boolean(realistic?.ok);
+
+  if (!geminiOk && reserve.ok) {
+    lines.push(
+      '',
+      'ℹ️ <b>Gemini недоступен, но бот работает</b> — ответы идут через резервный Workers AI.',
+      'Причина указана выше: чаще всего это таймаут или исчерпанная квота.'
+    );
+  }
+
+  if (!geminiOk && !reserve.ok) {
+    lines.push('', '🔴 <b>Не отвечает ни один провайдер</b> — бот не сможет ответить.');
+  }
+
+  if (quick.ok && realistic && !realistic.ok) {
     lines.push(
       '',
       '⚠️ <b>Короткий запрос проходит, а боевой — нет.</b>',
-      'Именно поэтому ответы приходят от резервного Workers AI.',
-      'Причина указана в ошибке выше; подробности также есть в логах воркера.'
+      'Именно поэтому ответы приходят от резервного Workers AI.'
+    );
+  }
+
+  if (requestedModel && quick.ok) {
+    lines.push(
+      '',
+      `Чтобы закрепить эту модель, задайте переменную <code>GEMINI_MODEL</code> = <code>${escapeHtml(requestedModel)}</code>.`
     );
   }
 
@@ -486,8 +543,8 @@ async function sendAiStatus(env, chatId) {
 
   lines.push(
     '',
-    'Смена модели: добавьте переменную <code>GEMINI_MODEL</code> в настройках воркера',
-    '(Settings → Variables and secrets → Add → Variable) — без правки кода.'
+    'Проверить другую модель: <code>/ai gemini-2.5-flash-lite</code>',
+    'Сменить рабочую: задайте переменную <code>GEMINI_MODEL</code> в настройках воркера.'
   );
 
   await sendTelegramMessage(env, chatId, lines.join('\n'), mainMenuKeyboard());

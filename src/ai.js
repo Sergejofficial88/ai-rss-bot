@@ -128,12 +128,12 @@ function describeEmptyResult(result) {
  * затем Interactions API (Google рекомендует его для новых моделей).
  * Возвращает { text, provider, errors }.
  */
-async function askGemini(env, { system, prompt, maxTokens }) {
+async function askGemini(env, { system, prompt, maxTokens }, modelOverride = null) {
   if (!env.GEMINI_API_KEY) {
     return { text: null, provider: null, errors: ['секрет GEMINI_API_KEY не задан'] };
   }
 
-  const model = resolveGeminiModel(env);
+  const model = modelOverride || resolveGeminiModel(env);
   const request = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
@@ -310,14 +310,35 @@ ${context}
 }
 
 /**
- * Проверка связи с Gemini — для команды /ai.
+ * Проверка резервного провайдера — для команды /ai.
+ * Без неё непонятно, работает ли бот вообще: команда /ai тестирует только Gemini,
+ * и при его недоступности кажется, будто «обе модели молчат».
+ */
+export async function testCloudflare(env) {
+  const started = Date.now();
+  const result = await askCloudflare(env, {
+    prompt: 'Ответь ровно одним словом: работает',
+    maxTokens: 64,
+  });
+
+  return {
+    ok: Boolean(result.text),
+    provider: result.provider,
+    ms: Date.now() - started,
+    sample: result.text ?? '',
+    errors: result.errors,
+  };
+}
+
+/**
+ * Проверка Gemini — для команды /ai.
  *
  * В «реалистичном» режиме повторяет условия боевого запроса: системная инструкция,
  * длинный контекст и большой лимит вывода. Короткая проверка может проходить там,
  * где настоящий запрос стабильно падает, — поэтому нужны оба варианта.
  */
-export async function testGemini(env, { realistic = false } = {}) {
-  const model = resolveGeminiModel(env);
+export async function testGemini(env, { realistic = false, model = null } = {}) {
+  const targetModel = model || resolveGeminiModel(env);
   const started = Date.now();
 
   const options = realistic
@@ -333,10 +354,10 @@ export async function testGemini(env, { realistic = false } = {}) {
       }
     : { prompt: 'Ответь ровно одним словом: работает', maxTokens: 64 };
 
-  const result = await askGemini(env, options);
+  const result = await askGemini(env, options, model);
 
   return {
-    model,
+    model: targetModel,
     realistic,
     ok: Boolean(result.text),
     provider: result.provider,

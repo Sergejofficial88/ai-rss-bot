@@ -27,12 +27,14 @@
   },
 
   // Несекретные переменные окружения.
-  // У gemini-3.8-flash на Free Tier всего 20 запросов в сутки — этого не хватает:
-  // квота выгорает за пару сообщений, и бот уходит на резервный Workers AI.
-  // Lite-модель тратит квоту заметно экономнее, поэтому она по умолчанию.
+  // Модель выбрана по фактам из логов, а не по названию:
+  //   • gemini-3.8-flash          — 20 запросов в сутки на Free Tier, часто отвечает 503
+  //   • gemini-flash-lite-latest  — POST висит до таймаута
+  //   • gemini-2.5-flash-lite     — 404: «no longer available to new users»
+  //   • gemini-3.5-flash-lite     — отвечает штатно (её и советует Google)
   // Заменить можно здесь или в дашборде (Settings → Variables and secrets → Variable).
   "vars": {
-    "GEMINI_MODEL": "gemini-flash-lite-latest"
+    "GEMINI_MODEL": "gemini-3.5-flash-lite"
   },
 
   // Хранилище состояния.
